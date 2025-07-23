@@ -1,14 +1,15 @@
-package tencentcloud
+package edgeone
 
 import (
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/libdns/libdns"
+	"golang.org/x/net/idna"
 )
 
-var ErrRecordNotFound = errors.New("record not found")
 var ErrNotValid = errors.New("returned value is not valid")
 
 type Provider struct {
@@ -18,51 +19,76 @@ type Provider struct {
 	Region       string
 }
 
-type CreateModifyRecordRequest struct {
-	Domain     string `json:"Domain"`
-	SubDomain  string `json:"SubDomain,omitempty"`
-	RecordType string `json:"RecordType,omitempty"`
-	RecordLine string `json:"RecordLine,omitempty"`
-	Value      string `json:"Value,omitempty"`
-	TTL        int64  `json:"TTL,omitempty"`
-	RecordId   uint64 `json:"RecordId,omitempty"`
+type ModifyDnsRecordsRequest struct {
+	ZoneId     string      `json:"ZoneId"`
+	DnsRecords []DnsRecord `json:"DnsRecords,omitempty"`
 }
 
-type FindRecordRequest struct {
-	Domain     string `json:"Domain"`
-	RecordType string `json:"RecordType,omitempty"`
-	RecordLine string `json:"RecordLine,omitempty"`
-	Subdomain  string `json:"Subdomain,omitempty"`
-	Limit      int64  `json:"Limit,omitempty"`
+type CreateDnsRecordRequest struct {
+	DnsRecord
 }
 
-type DeleteRecordRequest struct {
-	Domain   string `json:"Domain"`
-	RecordId uint64 `json:"RecordId"`
+type DescribeDnsRecordsRequest struct {
+	ZoneId  string   `json:"ZoneId"`
+	Limit   int64    `json:"Limit,omitempty"`
+	Filters []Filter `json:"Filters,omitempty"`
+	SortBy  string   `json:"SortBy,omitempty"`
 }
 
-type Response struct {
-	Response ResponseData `json:"Response"`
+type DeleteDnsRecordsRequest struct {
+	ZoneId    string   `json:"ZoneId"`
+	RecordIds []string `json:"RecordIds"`
 }
 
-type ResponseData struct {
-	RecordList []RecordInfo `json:"RecordList,omitempty"`
-	RecordId   uint64       `json:"RecordId,omitempty"`
-	Error      *ErrorInfo   `json:"Error,omitempty"`
+type DescribeZonesRequest struct {
+	Filters []Filter `json:"Filters,omitempty"`
 }
 
-type RecordInfo struct {
-	RecordId int64  `json:"RecordId"`
-	Type     string `json:"Type"`
+type DescribeZonesResponse struct {
+	Response struct {
+		Error *Error `json:"Error,omitempty"`
+		Zones []struct {
+			ZoneId string `json:"ZoneId"`
+		} `json:"Zones"`
+	}
+}
+
+type DescribeDnsRecordsResponse struct {
+	Response struct {
+		Error      *Error      `json:"Error,omitempty"`
+		DnsRecords []DnsRecord `json:"DnsRecords"`
+	}
+}
+
+type CreateDnsRecordResponse struct {
+	Response struct {
+		Error    *Error `json:"Error,omitempty"`
+		RecordId string `json:"RecordId"`
+	}
+}
+
+type Error struct {
+	Code    string
+	Message string
+}
+
+type DnsRecord struct {
+	Content  string `json:"Content"`
+	Location string `json:"Location,omitempty"`
 	Name     string `json:"Name"`
-	Value    string `json:"Value"`
-	TTL      int64  `json:"TTL"`
-	MX       int    `json:"MX,omitempty"`
+	Priority int    `json:"Priority,omitempty"`
+	RecordId string `json:"RecordId,omitempty"`
+	Status   string `json:"Status,omitempty"`
+	TTL      int64  `json:"TTL,omitempty"`
+	Type     string `json:"Type"`
+	Weight   int    `json:"Weight,omitempty"`
+	ZoneId   string `json:"ZoneId"`
 }
 
-type ErrorInfo struct {
-	Code    string `json:"Code"`
-	Message string `json:"Message"`
+type Filter struct {
+	Name   string   `json:"Name"`
+	Values []string `json:"Values"`
+	Fuzzy  bool     `json:"Fuzzy,omitempty"`
 }
 
 type record struct {
@@ -85,21 +111,17 @@ func (r record) libdnsRecord() (libdns.Record, error) {
 	}.Parse()
 }
 
-func fromLibdnsRecord(r libdns.Record) record {
+func fromLibdnsRecord(zone string, r libdns.Record) record {
 	rr := r.RR()
-
-	host := rr.Name
-	if host == "@" {
-		host = ""
-	}
 
 	if rr.TTL == 0 {
 		rr.TTL = 600
 	}
+	name, _ := idna.ToASCII(strings.TrimSuffix(libdns.AbsoluteName(rr.Name, zone), "."))
 
 	return record{
 		Type:  rr.Type,
-		Name:  host,
+		Name:  name,
 		Value: rr.Data,
 		TTL:   rr.TTL,
 	}

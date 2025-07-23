@@ -1,4 +1,4 @@
-package tencentcloud
+package edgeone
 
 import (
 	"crypto/hmac"
@@ -13,7 +13,7 @@ import (
 // SignRequest https://github.com/jeessy2/ddns-go/blob/master/util/tencent_cloud_signer.go
 func SignRequest(secretId string, secretKey string, sessionToken string, r *http.Request, action string, payload string) {
 	algorithm := "TC3-HMAC-SHA256"
-	service := "dnspod"
+	service := "teo"
 	host := writeString(service, ".tencentcloudapi.com")
 	timestamp := time.Now().Unix()
 	timestampStr := strconv.FormatInt(timestamp, 10)
