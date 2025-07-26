@@ -2,7 +2,8 @@ package edgeone
 
 import (
 	"errors"
-	"strconv"
+	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -76,12 +77,12 @@ type DnsRecord struct {
 	Content  string `json:"Content"`
 	Location string `json:"Location,omitempty"`
 	Name     string `json:"Name"`
-	Priority int    `json:"Priority,omitempty"`
+	Priority int64  `json:"Priority,omitempty"`
 	RecordId string `json:"RecordId,omitempty"`
 	Status   string `json:"Status,omitempty"`
 	TTL      int64  `json:"TTL,omitempty"`
 	Type     string `json:"Type"`
-	Weight   int    `json:"Weight,omitempty"`
+	Weight   int64  `json:"Weight,omitempty"`
 	ZoneId   string `json:"ZoneId"`
 }
 
@@ -91,38 +92,71 @@ type Filter struct {
 	Fuzzy  bool     `json:"Fuzzy,omitempty"`
 }
 
-type record struct {
-	Type  string
-	Name  string
-	Value string
-	TTL   time.Duration
-	MX    int
-}
-
-func (r record) libdnsRecord() (libdns.Record, error) {
-	if r.Type == "MX" {
-		r.Value = strconv.Itoa(r.MX) + " " + r.Value
+func (r DnsRecord) libdnsRecord(zone string) (libdns.Record, error) {
+	name := libdns.RelativeName(r.Name, zone)
+	ttl := time.Duration(r.TTL) * time.Second
+	switch r.Type {
+	case "A", "AAAA":
+		addr, err := netip.ParseAddr(r.Content)
+		if err != nil {
+			return libdns.Address{}, fmt.Errorf("invalid IP address %q: %v", r.Content, err)
+		}
+		return libdns.Address{
+			Name: name,
+			TTL:  ttl,
+			IP:   addr,
+		}, nil
+	case "CNAME":
+		return libdns.CNAME{
+			Name:   name,
+			TTL:    ttl,
+			Target: r.Content,
+		}, nil
+	case "MX":
+		return libdns.MX{
+			Name:       name,
+			TTL:        ttl,
+			Preference: uint16(r.Priority),
+			Target:     r.Content,
+		}, nil
+	case "NS":
+		return libdns.NS{
+			Name:   name,
+			TTL:    ttl,
+			Target: r.Content,
+		}, nil
+	case "TXT":
+		return libdns.TXT{
+			Name: name,
+			TTL:  ttl,
+			Text: r.Content,
+		}, nil
+	default:
+		return libdns.RR{
+			Type: r.Type,
+			Name: name,
+			Data: r.Content,
+			TTL:  ttl,
+		}.Parse()
 	}
-	return libdns.RR{
-		Type: r.Type,
-		Name: r.Name,
-		Data: r.Value,
-		TTL:  r.TTL,
-	}.Parse()
 }
 
-func fromLibdnsRecord(zone string, r libdns.Record) record {
+func edgeOneRecord(zone string, r libdns.Record) DnsRecord {
 	rr := r.RR()
 
-	if rr.TTL == 0 {
-		rr.TTL = 600
-	}
+	ttl := max(rr.TTL, 60*time.Second)
 	name, _ := idna.ToASCII(strings.TrimSuffix(libdns.AbsoluteName(rr.Name, zone), "."))
 
-	return record{
-		Type:  rr.Type,
-		Name:  name,
-		Value: rr.Data,
-		TTL:   rr.TTL,
+	record := DnsRecord{
+		Name:     name,
+		Type:     rr.Type,
+		Content:  rr.Data,
+		Location: "Default",
+		TTL:      int64(ttl.Seconds()),
 	}
+	switch rec := r.(type) {
+	case libdns.MX:
+		record.Priority = int64(rec.Preference)
+	}
+	return record
 }

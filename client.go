@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -22,6 +25,18 @@ const (
 	DeleteDnsRecords   = "DeleteDnsRecords"
 )
 
+type TimedValue[T any] struct {
+	Value     string
+	UpdatedAt time.Time
+}
+
+const zoneIdTTL = 10 * time.Minute
+
+var (
+	zoneIds   sync.Map // map[string]TimedValue[string]
+	zoneGroup singleflight.Group
+)
+
 func (p *Provider) listRecords(ctx context.Context, zoneId string, zone string) ([]libdns.Record, error) {
 	requestData := DescribeDnsRecordsRequest{
 		ZoneId: zoneId,
@@ -32,7 +47,7 @@ func (p *Provider) listRecords(ctx context.Context, zoneId string, zone string) 
 		return nil, err
 	}
 
-	resp, err := p.sendRequest(ctx, DescribeDnsRecords, string(payload))
+	resp, err := p.doAPIRequest(ctx, DescribeDnsRecords, string(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -49,14 +64,7 @@ func (p *Provider) listRecords(ctx context.Context, zoneId string, zone string) 
 
 	list := make([]libdns.Record, 0, len(response.Response.DnsRecords))
 	for _, txRecord := range response.Response.DnsRecords {
-		rr := record{
-			Type:  txRecord.Type,
-			Name:  libdns.RelativeName(txRecord.Name, zone),
-			Value: txRecord.Content,
-			TTL:   time.Duration(txRecord.TTL) * time.Second,
-			MX:    txRecord.Priority,
-		}
-		libdnsRecord, err := rr.libdnsRecord()
+		libdnsRecord, err := txRecord.libdnsRecord(zone)
 		if err != nil {
 			return nil, err
 		}
@@ -66,24 +74,18 @@ func (p *Provider) listRecords(ctx context.Context, zoneId string, zone string) 
 	return list, nil
 }
 
-func (p *Provider) createDnsRecord(ctx context.Context, zoneId string, r record) error {
+func (p *Provider) createDnsRecord(ctx context.Context, zoneId string, r DnsRecord) error {
 	requestData := CreateDnsRecordRequest{
-		DnsRecord: DnsRecord{
-			ZoneId:   zoneId,
-			Name:     r.Name,
-			Type:     r.Type,
-			Content:  r.Value,
-			Location: "Default",
-			TTL:      int64(r.TTL.Seconds()),
-		},
+		DnsRecord: r,
 	}
+	requestData.DnsRecord.ZoneId = zoneId
 
 	payload, err := json.Marshal(requestData)
 	if err != nil {
 		return err
 	}
 
-	resp, err := p.sendRequest(ctx, CreateDnsRecord, string(payload))
+	resp, err := p.doAPIRequest(ctx, CreateDnsRecord, string(payload))
 	if err != nil {
 		return err
 	}
@@ -110,17 +112,10 @@ func (p *Provider) modifyDnsRecords(ctx context.Context, zoneId string, domain s
 	var dnsRecords []DnsRecord
 
 	for id := range recordMap {
-		r := fromLibdnsRecord(domain, recordMap[id])
-		dnsRecords = append(dnsRecords, DnsRecord{
-			RecordId: id,
-			ZoneId:   zoneId,
-			Name:     r.Name,
-			Type:     r.Type,
-			Content:  r.Value,
-			Location: "Default",
-			Status:   "enable",
-			TTL:      int64(r.TTL.Seconds()),
-		})
+		r := edgeOneRecord(domain, recordMap[id])
+		r.RecordId = id
+		r.ZoneId = zoneId
+		dnsRecords = append(dnsRecords, r)
 	}
 
 	requestData := ModifyDnsRecordsRequest{
@@ -133,7 +128,7 @@ func (p *Provider) modifyDnsRecords(ctx context.Context, zoneId string, domain s
 		return err
 	}
 
-	_, err = p.sendRequest(ctx, ModifyDnsRecords, string(payload))
+	_, err = p.doAPIRequest(ctx, ModifyDnsRecords, string(payload))
 	return err
 }
 
@@ -151,17 +146,17 @@ func (p *Provider) deleteDnsRecords(ctx context.Context, zoneId string, ids []st
 		return err
 	}
 
-	_, err = p.sendRequest(ctx, DeleteDnsRecords, string(payload))
+	_, err = p.doAPIRequest(ctx, DeleteDnsRecords, string(payload))
 	return err
 }
 
-func (p *Provider) findRecord(ctx context.Context, zoneId string, r record, matchContent bool) ([]string, error) {
+func (p *Provider) findRecord(ctx context.Context, zoneId string, r DnsRecord, matchContent bool) ([]string, error) {
 	filters := []Filter{
 		{Name: "name", Values: []string{r.Name}},
 		{Name: "type", Values: []string{r.Type}},
 	}
 	if matchContent {
-		filters = append(filters, Filter{Name: "content", Values: []string{r.Value}})
+		filters = append(filters, Filter{Name: "content", Values: []string{r.Content}})
 	}
 	requestData := DescribeDnsRecordsRequest{
 		ZoneId:  zoneId,
@@ -174,7 +169,7 @@ func (p *Provider) findRecord(ctx context.Context, zoneId string, r record, matc
 		return nil, err
 	}
 
-	resp, err := p.sendRequest(ctx, DescribeDnsRecords, string(payload))
+	resp, err := p.doAPIRequest(ctx, DescribeDnsRecords, string(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -201,36 +196,59 @@ func (p *Provider) findRecord(ctx context.Context, zoneId string, r record, matc
 
 func (p *Provider) getZoneId(ctx context.Context, zone string) (string, error) {
 	domain := strings.TrimSuffix(zone, ".")
-	requestData := DescribeZonesRequest{
-		Filters: []Filter{{Name: "zone-name", Values: []string{domain}}},
+	if v, ok := zoneIds.Load(domain); ok {
+		if cached, ok := v.(TimedValue[string]); ok && time.Since(cached.UpdatedAt) <= zoneIdTTL {
+			return cached.Value, nil
+		}
 	}
 
-	payload, err := json.Marshal(requestData)
+	zid, err, _ := zoneGroup.Do(domain, func() (any, error) {
+		if v, ok := zoneIds.Load(domain); ok {
+			if cached, ok := v.(TimedValue[string]); ok && time.Since(cached.UpdatedAt) <= zoneIdTTL {
+				return cached.Value, nil
+			}
+		}
+
+		requestData := DescribeZonesRequest{
+			Filters: []Filter{{Name: "zone-name", Values: []string{domain}}},
+		}
+
+		payload, err := json.Marshal(requestData)
+		if err != nil {
+			return "", err
+		}
+
+		resp, err := p.doAPIRequest(ctx, DescribeZones, string(payload))
+		if err != nil {
+			return "", err
+		}
+
+		var response DescribeZonesResponse
+		if err = json.Unmarshal(resp, &response); err != nil {
+			return "", err
+		}
+		if response.Response.Error != nil {
+			err = errors.New(response.Response.Error.Message)
+			return "", err
+		}
+
+		if len(response.Response.Zones) <= 0 {
+			return "", fmt.Errorf("zone %q not found in DescribeZones response", domain)
+		}
+		zoneId := response.Response.Zones[0].ZoneId
+		zoneIds.Store(domain, TimedValue[string]{
+			Value:     zoneId,
+			UpdatedAt: time.Now(),
+		})
+		return zoneId, nil
+	})
 	if err != nil {
 		return "", err
 	}
-
-	resp, err := p.sendRequest(ctx, DescribeZones, string(payload))
-	if err != nil {
-		return "", err
-	}
-
-	var response DescribeZonesResponse
-	if err = json.Unmarshal(resp, &response); err != nil {
-		return "", err
-	}
-	if response.Response.Error != nil {
-		err = errors.New(response.Response.Error.Message)
-		return "", err
-	}
-
-	if len(response.Response.Zones) <= 0 {
-		return "", errors.New("Zone not found: " + zone)
-	}
-	return response.Response.Zones[0].ZoneId, nil
+	return zid.(string), nil
 }
 
-func (p *Provider) sendRequest(ctx context.Context, action string, data string) ([]byte, error) {
+func (p *Provider) doAPIRequest(ctx context.Context, action string, data string) ([]byte, error) {
 	endpointUrl := endpoint
 	if p.Region != "" {
 		endpointUrl = "https://teo." + p.Region + ".tencentcloudapi.com"
@@ -241,10 +259,9 @@ func (p *Provider) sendRequest(ctx context.Context, action string, data string) 
 		return nil, err
 	}
 
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-TC-Version", "2022-09-01")
 
-	SignRequest(p.SecretId, p.SecretKey, p.SessionToken, req, action, data)
+	TencentCloudSigner(p.SecretId, p.SecretKey, p.SessionToken, req, action, data)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err

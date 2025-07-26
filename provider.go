@@ -21,7 +21,7 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, records []lib
 	}
 
 	for _, record := range records {
-		r := fromLibdnsRecord(zone, record)
+		r := edgeOneRecord(zone, record)
 		if err := p.createDnsRecord(ctx, zoneId, r); err != nil {
 			return nil, err
 		}
@@ -39,7 +39,7 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns
 	p_matches := make(map[string]int)
 	matches := make(map[string][]string)
 	for _, record := range records {
-		r := fromLibdnsRecord(zone, record)
+		r := edgeOneRecord(zone, record)
 		if _, ok := matches[r.Name]; !ok {
 			matches[r.Name], err = p.findRecord(ctx, zoneId, r, false)
 			p_matches[r.Name] = len(matches[r.Name])
@@ -71,11 +71,11 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []lib
 	var ids []string
 	matches := make(map[string][]string)
 	for _, record := range records {
-		r := fromLibdnsRecord(zone, record)
+		r := edgeOneRecord(zone, record)
 		item := r.Name
 		matchContent := record.RR().Data != ""
 		if matchContent {
-			item = r.Name + r.Value
+			item = r.Name + r.Content
 		}
 		if _, ok := matches[item]; !ok {
 			matches[item], err = p.findRecord(ctx, zoneId, r, matchContent)

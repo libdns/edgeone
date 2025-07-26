@@ -52,9 +52,10 @@ func TestDeleteRecords(t *testing.T) {
 	recs, err := provider.DeleteRecords(context.Background(), zone, []libdns.Record{
 		libdns.RR{Name: "two", TTL: 10 * time.Minute, Type: "AAAA", Data: "2606:4700:4700::1111"},
 		libdns.RR{Name: "one", TTL: 10 * time.Minute, Type: "TXT", Data: "hello world2"},
-		libdns.RR{Name: "one", TTL: 10 * time.Minute, Type: "A"},
+		libdns.RR{Name: "one", TTL: 10 * time.Second, Type: "A"},
 		libdns.TXT{Name: "one3", TTL: 10 * time.Minute, Text: "hello world"},
-		libdns.TXT{Name: "@", TTL: 10 * time.Minute},
+		libdns.TXT{Name: "@", TTL: 1 * time.Minute},
+		libdns.TXT{Name: "_acme-challenge"},
 	})
 	if err != nil {
 		t.Fatalf("DeleteRecords: %v", err)
