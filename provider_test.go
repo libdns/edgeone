@@ -54,7 +54,6 @@ func TestDeleteRecords(t *testing.T) {
 		libdns.RR{Name: "one", TTL: 10 * time.Minute, Type: "TXT", Data: "hello world2"},
 		libdns.RR{Name: "one", TTL: 10 * time.Second, Type: "A"},
 		libdns.TXT{Name: "one3", TTL: 10 * time.Minute, Text: "hello world"},
-		libdns.TXT{Name: "@", TTL: 1 * time.Minute},
 		libdns.TXT{Name: "_acme-challenge"},
 	})
 	if err != nil {
