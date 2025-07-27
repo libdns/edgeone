@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libdns/libdns"
@@ -18,6 +19,8 @@ type Provider struct {
 	SecretKey    string
 	SessionToken string
 	Region       string
+
+	mu sync.Mutex
 }
 
 type ModifyDnsRecordsRequest struct {

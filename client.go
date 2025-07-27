@@ -75,6 +75,8 @@ func (p *Provider) listRecords(ctx context.Context, zoneId string, zone string) 
 }
 
 func (p *Provider) createDnsRecord(ctx context.Context, zoneId string, r DnsRecord) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	requestData := CreateDnsRecordRequest{
 		DnsRecord: r,
 	}
@@ -108,7 +110,8 @@ func (p *Provider) createDnsRecord(ctx context.Context, zoneId string, r DnsReco
 }
 
 func (p *Provider) modifyDnsRecords(ctx context.Context, zoneId string, domain string, recordMap map[string]libdns.Record) error {
-
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	var dnsRecords []DnsRecord
 
 	for id := range recordMap {
@@ -133,6 +136,8 @@ func (p *Provider) modifyDnsRecords(ctx context.Context, zoneId string, domain s
 }
 
 func (p *Provider) deleteDnsRecords(ctx context.Context, zoneId string, ids []string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if len(ids) <= 0 {
 		return nil
 	}
@@ -151,6 +156,8 @@ func (p *Provider) deleteDnsRecords(ctx context.Context, zoneId string, ids []st
 }
 
 func (p *Provider) findRecord(ctx context.Context, zoneId string, r DnsRecord, matchContent bool) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	filters := []Filter{
 		{Name: "name", Values: []string{r.Name}},
 		{Name: "type", Values: []string{r.Type}},
