@@ -146,8 +146,12 @@ func (r DnsRecord) libdnsRecord(zone string) (libdns.Record, error) {
 
 func edgeOneRecord(zone string, r libdns.Record) DnsRecord {
 	rr := r.RR()
-
-	ttl := max(rr.TTL, 60*time.Second)
+	var ttl time.Duration
+	if rr.TTL == 0 {
+		ttl = 300 * time.Second
+	} else {
+		ttl = max(min(rr.TTL, 86400*time.Second), 60*time.Second)
+	}
 	name, _ := idna.ToASCII(strings.TrimSuffix(libdns.AbsoluteName(rr.Name, zone), "."))
 
 	record := DnsRecord{
